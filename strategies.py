@@ -242,9 +242,10 @@ def run_retail_strategy_by_type(asset_df: pd.DataFrame, qqq_df: pd.DataFrame, pa
     # 自动识别资产本身是否为 benchmark
     is_benchmark_asset = (ret_60d_asset - ret_60d_bench).abs().max() < 1e-6
     
-    high_20d = prices.rolling(20).max()
-    low_20d = prices.rolling(20).min()
-    vol_mean_20d = volumes.rolling(20).mean()
+    retail_window = params.get('retail_window', 60)
+    high_20d = prices.rolling(retail_window).max()
+    low_20d = prices.rolling(retail_window).min()
+    vol_mean_20d = volumes.rolling(retail_window).mean()
     
     discovered = False
     discovery_price_peak = 0.0
@@ -293,7 +294,8 @@ def run_retail_strategy_by_type(asset_df: pd.DataFrame, qqq_df: pd.DataFrame, pa
             if discovered:
                 discovery_price_peak = max(discovery_price_peak, price_t_1)
                 dd = (price_t_1 - discovery_price_peak) / discovery_price_peak
-                if feel_state == 'bear' or (dd < -0.08):
+                panic_drawdown = params.get('panic_drawdown', 0.15)
+                if feel_state == 'bear' or (dd < -panic_drawdown):
                     discovered = False
             else:
                 if feel_state == 'bull' or (ret_10d_asset_t_1 > 0.10):

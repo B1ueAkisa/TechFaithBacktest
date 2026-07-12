@@ -93,24 +93,12 @@ def plot_3state_analysis():
                 }
             return None
             
-        if asset == "688_CHIP":
-            strats = [
-                "专业策略 (每日 ETF)", "专业策略 (静态融资)", 
-                "散户现货策略 (非信仰型)", "散户现货策略 (信仰型)",
-                "散户融资策略 (非信仰型)", "散户融资策略 (信仰型)"
-            ]
-        else:
-            strats = [
-                "专业策略 (每日 ETF)", "专业策略 (静态融资)", 
-                "散户策略 (非信仰型 ETF)", "散户策略 (信仰型 ETF)"
-            ]
-            
-        criterias = ["Max Sharpe", "Max Return"]
-        
         # 构建唯一的回测运行
         runs = {}
-        for strat in strats:
-            for crit in criterias:
+        
+        # 1. 机构专业策略：从扫参最佳表加载作为对照基准
+        for strat in ["专业策略 (每日 ETF)", "专业策略 (静态融资)"]:
+            for crit in ["Max Sharpe", "Max Return"]:
                 p = get_params_for_criteria(strat, crit)
                 if p is not None:
                     p_tuple = (p["exposure_bull"], p["exposure_oscillate"], p["exposure_bear"], p["vol_target"])
@@ -118,6 +106,27 @@ def plot_3state_analysis():
                     if key not in runs:
                         runs[key] = []
                     runs[key].append(crit)
+                    
+        # 2. 散户策略：使用 4 组经典固定画像参数
+        if asset == "688_CHIP":
+            non_bel_name = "散户融资策略 (非信仰型)"
+            bel_name = "散户融资策略 (信仰型)"
+        else:
+            non_bel_name = "散户策略 (非信仰型 ETF)"
+            bel_name = "散户策略 (信仰型 ETF)"
+            
+        retail_configs = [
+            (non_bel_name, (2.0, 0.8, 0.0, None), "激进画像"),
+            (non_bel_name, (1.5, 0.5, 0.0, None), "保守画像"),
+            (bel_name, (2.0, 1.3, 1.0, None), "激进画像"),
+            (bel_name, (2.0, 1.0, 0.5, None), "保守画像")
+        ]
+        
+        for strat, p_tuple, tag in retail_configs:
+            key = (strat, p_tuple)
+            if key not in runs:
+                runs[key] = []
+            runs[key].append(tag)
                     
         # 基础对比项
         nav_1x = prices / prices.iloc[0]
@@ -226,32 +235,49 @@ def plot_3state_analysis():
             if "散户" in label:
                 ax.plot(nav_s.index, nav_s.values, label=label, color=color, linewidth=lw, linestyle=ls)
             
-        # 8. 直接对每一个散户回测线绘制其本尊的买卖决策信号点
+        # 8. 直接对【激进画像】散户回测线绘制其买卖/仓位调整信号点，以保持图面整洁并形成对比
         buy_legend_added = False
         sell_legend_added = False
-        bel_legend_added = False
+        panic_legend_added = False
         
         for strat, res_df, crits in retail_scatters:
-            imp_buy = res_df[res_df['transition'] == 1]
-            imp_sell = res_df[res_df['transition'] == -1]
+            # 仅对“激进画像”进行打点
+            if "激进画像" not in crits:
+                continue
+                
+            diff_exp = res_df['exposure'].diff().fillna(0.0)
+            if len(res_df) > 0 and res_df['exposure'].iloc[0] > 0.0:
+                diff_exp.iloc[0] = res_df['exposure'].iloc[0]
+                
+            prev_disc = res_df['exposure'].shift(1).fillna(0.0) > 0.0
+            curr_disc = res_df['exposure'] > 0.0
             
-            # 线宽与类型，如果是 Max Return (虚线)，点标记大小稍微调小以示区分
-            size_b = 90 if "Max Sharpe" in crits else 50
-            size_s = 90 if "Max Sharpe" in crits else 50
+            # 区分买、普通减仓、恐慌清仓
+            imp_buy = res_df[diff_exp > 0.0]
+            imp_panic = res_df[prev_disc & ~curr_disc]
+            imp_sell = res_df[(diff_exp < 0.0) & ~(prev_disc & ~curr_disc)]
+            
+            size_p = 40
             
             if "非信仰型" in strat:
-                # 绘制非信仰散户买卖点
-                ax.scatter(imp_buy.index, imp_buy['nav'], color='#2ca02c', marker='^', s=size_b, zorder=6, 
-                           label='非信仰散户买点' if not buy_legend_added else "")
-                ax.scatter(imp_sell.index, imp_sell['nav'], color='#d62728', marker='v', s=size_s, zorder=6, 
-                           label='非信仰散户卖点' if not sell_legend_added else "")
+                # 非信仰型：使用青色三角形加仓，橙色三角形减仓，深红色大 X 斩仓
+                ax.scatter(imp_buy.index, imp_buy['nav'], color='#17becf', marker='^', s=size_p, zorder=6, 
+                           label='非信仰加仓' if not buy_legend_added else "")
+                ax.scatter(imp_sell.index, imp_sell['nav'], color='#ff7f0e', marker='v', s=size_p, zorder=6, 
+                           label='非信仰减仓' if not sell_legend_added else "")
+                ax.scatter(imp_panic.index, imp_panic['nav'], color='#d62728', marker='X', s=75, zorder=8, 
+                           label='非信仰恐慌斩仓' if not panic_legend_added else "")
                 buy_legend_added = True
                 sell_legend_added = True
+                panic_legend_added = True
             elif "信仰型" in strat:
-                # 绘制信仰散户首次入场点
-                ax.scatter(imp_buy.index, imp_buy['nav'], color='#9467bd', marker='D', s=size_b, zorder=7, 
-                           label='信仰散户首次入场点' if not bel_legend_added else "")
-                bel_legend_added = True
+                # 信仰型：使用绿色三角形加仓，红色三角形减仓
+                ax.scatter(imp_buy.index, imp_buy['nav'], color='#2ca02c', marker='^', s=size_p, zorder=6, 
+                           label='信仰加仓' if not buy_legend_added else "")
+                ax.scatter(imp_sell.index, imp_sell['nav'], color='#d62728', marker='v', s=size_p, zorder=6, 
+                           label='信仰减仓' if not sell_legend_added else "")
+                buy_legend_added = True
+                sell_legend_added = True
             
         # 9. 终点防重叠文字对齐 (以绘制的散户线为主进行范围判定，包含隐藏参考线终点)
         y_min_val = min([nav_s.min() for label, nav_s, _, _, _ in lines if "散户" in label] + [nav_s.iloc[-1] for label, nav_s, _, _, _ in lines if "散户" not in label])
