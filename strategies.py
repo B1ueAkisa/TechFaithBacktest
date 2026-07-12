@@ -32,17 +32,9 @@ def get_qqq_global_state(qqq_df: pd.DataFrame, target_index: pd.Index, ema_fast_
 
 def run_professional_strategy(asset_df: pd.DataFrame, qqq_df: pd.DataFrame, params: dict, 
                               leverage_type: str = 'daily_etf', interest_rate: float = 0.04,
-                              fee_rate_annual: float = 0.0095) -> pd.DataFrame:
+                              fee_rate_annual: float = 0.0095, trans_fee_rate: float = 0.001) -> pd.DataFrame:
     """
     机构级专业策略 (大盘与个股协同杠杆控制模型)
-    - 结合大盘 QQQ 状态与个股走势 (个股收盘价是否大于自身 20 EMA) 划分三大阶段：
-      - 主升期 (Bull): QQQ主升 且 个股 > 20EMA.
-      - 主跌期 (Bear): QQQ主跌 且 个股 < 20EMA.
-      - 震荡期 (Oscillate): 其余情况.
-    - 引入 60 日个股与大盘相对超额收益 ($Rel_{60d} = R^{\text{asset}}_{60d} - R^{\text{QQQ}}_{60d}$):
-      - 若 $Rel_{60d} < -10\%$ 视为“落后补涨”状态：若处于主跌期，提高仓位至 1.0x (防守性增强)。
-      - 若 $Rel_{60d} > 10\%$ 视为“超涨”状态：若处于主升或震荡期，杠杆低配（仓位下调 0.3x）。
-    - 波动率风控因子 $F_{\text{vol}}$ 动态乘数继续生效。
     """
     target_index = asset_df.index
     prices = asset_df['Close']
@@ -66,34 +58,36 @@ def run_professional_strategy(asset_df: pd.DataFrame, qqq_df: pd.DataFrame, para
     rel_return_60d = asset_ret_60d - qqq_ret_60d
     
     # 20日滚动波动率，shift(1)
-    rolling_vol = (returns.rolling(window=20).std() * np.sqrt(252)).shift(1).fillna(params.get('vol_target', 0.25))
-    
-    max_lev = params.get('max_leverage', 2.0)
     vol_target = params.get('vol_target', 0.25)
-    r_cash = 0.02 / 252
+    rolling_vol = (returns.rolling(window=20).std() * np.sqrt(252)).shift(1).fillna(vol_target)
     
     exposures = []
     states = []
     state_nums = []
     
-    for idx, row in signals.iterrows():
+    max_lev = params.get('max_leverage', 2.0)
+    exp_bear = params.get('exposure_bear', 0.0)
+    exp_bull = params.get('exposure_bull', max_lev)
+    exp_osc = params.get('exposure_oscillate', 1.0)
+    
+    r_cash = 0.02 / 252
+    
+    for t in range(len(target_index)):
+        idx = target_index[t]
         vol = rolling_vol.loc[idx]
-        f_vol = max(0.0, 1.0 - (vol / vol_target))
+        f_vol = max(0.0, 1.0 - (vol / vol_target)) if vol_target > 0 else 1.0
         
-        # 个股均线状态
+        is_bull = signals['is_bull'].loc[idx]
+        is_bear = signals['is_bear'].loc[idx]
         above_ema = asset_above_ema20.loc[idx]
         
-        # 行情识别：大盘与个股协同
-        exp_bear = params.get('exposure_bear', 0.8)
-        exp_bull = params.get('exposure_bull', max_lev)
-        exp_osc = params.get('exposure_oscillate', 1.0 + (params.get('oscillate_weight', 0.7) * (max_lev - 1.0)))
-        
-        if row['is_bear'] and (not above_ema):
+        # 核心行情三状态划分
+        if is_bear and (not above_ema):
             # 主跌期
             base_exp = exp_bear
             state = 'bear'
             num = 0
-        elif row['is_bull'] and above_ema:
+        elif is_bull and above_ema:
             # 主升期
             base_exp = 1.0 + (exp_bull - 1.0) * f_vol if exp_bull > 1.0 else exp_bull * f_vol
             state = 'bull'
@@ -142,6 +136,12 @@ def run_professional_strategy(asset_df: pd.DataFrame, qqq_df: pd.DataFrame, para
                     w_etf = 0.0
                 w_1x = 1.0 - w_etf
                 r_p = w_1x * ret_t + w_etf * etf_ret.iloc[t]
+                
+            # 扣除仓位变动的手续费
+            if t > 0:
+                fee_change = abs(exp - exposures.iloc[t-1]) * trans_fee_rate
+                r_p -= fee_change
+                
             portfolio_returns.append(r_p)
             
     elif leverage_type == 'margin_constant':
@@ -152,12 +152,18 @@ def run_professional_strategy(asset_df: pd.DataFrame, qqq_df: pd.DataFrame, para
                 r_p = exp * ret_t + (1.0 - exp) * r_cash
             else:
                 interest_daily = interest_rate / 365.0
-                friction = exp * abs(exp - 1.0) * abs(ret_t) * 0.001
+                friction = exp * abs(exp - 1.0) * abs(ret_t) * trans_fee_rate
                 r_p = exp * ret_t - (exp - 1.0) * interest_daily - friction
+                
+            # 扣除仓位变动的手续费
+            if t > 0:
+                fee_change = abs(exp - exposures.iloc[t-1]) * trans_fee_rate
+                r_p -= fee_change
+                
             portfolio_returns.append(r_p)
             
     elif leverage_type == 'margin_static':
-        account = MarginAccount(initial_equity=100.0, interest_rate_annual=interest_rate, trans_fee_rate=0.001)
+        account = MarginAccount(initial_equity=100.0, interest_rate_annual=interest_rate, trans_fee_rate=trans_fee_rate)
         prev_exp = 1.0
         nav_series = [100.0]
         
@@ -192,7 +198,8 @@ def run_professional_strategy(asset_df: pd.DataFrame, qqq_df: pd.DataFrame, para
 
 def run_retail_strategy_by_type(asset_df: pd.DataFrame, qqq_df: pd.DataFrame, params: dict, 
                                 profile_type: str = 'non_believer', leverage_type: str = 'daily_etf', 
-                                interest_rate: float = 0.04, fee_rate_annual: float = 0.0095) -> pd.DataFrame:
+                                interest_rate: float = 0.04, fee_rate_annual: float = 0.0095,
+                                trans_fee_rate: float = 0.001) -> pd.DataFrame:
     """
     运行细分的散户画像策略（情绪感觉仓位调节版）：
     
@@ -369,6 +376,12 @@ def run_retail_strategy_by_type(asset_df: pd.DataFrame, qqq_df: pd.DataFrame, pa
                     w_etf = 0.0
                 w_1x = 1.0 - w_etf
                 r_p = w_1x * ret_t + w_etf * etf_ret.iloc[t]
+                
+            # 扣除仓位变动的手续费
+            if t > 0:
+                fee_change = abs(exp - exposures.iloc[t-1]) * trans_fee_rate
+                r_p -= fee_change
+                
             portfolio_returns.append(r_p)
             
     elif leverage_type in ['margin_constant', 'margin_static']:
@@ -380,11 +393,17 @@ def run_retail_strategy_by_type(asset_df: pd.DataFrame, qqq_df: pd.DataFrame, pa
                     r_p = exp * ret_t + (1.0 - exp) * r_cash
                 else:
                     interest_daily = interest_rate / 365.0
-                    friction = exp * abs(exp - 1.0) * abs(ret_t) * 0.001
+                    friction = exp * abs(exp - 1.0) * abs(ret_t) * trans_fee_rate
                     r_p = exp * ret_t - (exp - 1.0) * interest_daily - friction
+                    
+                # 扣除仓位变动的手续费
+                if t > 0:
+                    fee_change = abs(exp - exposures.iloc[t-1]) * trans_fee_rate
+                    r_p -= fee_change
+                    
                 portfolio_returns.append(r_p)
         else: # margin_static
-            account = MarginAccount(initial_equity=100.0, interest_rate_annual=interest_rate, trans_fee_rate=0.001)
+            account = MarginAccount(initial_equity=100.0, interest_rate_annual=interest_rate, trans_fee_rate=trans_fee_rate)
             prev_exp = 1.0
             nav_series = [100.0]
             

@@ -33,12 +33,23 @@ ETF_FEES = {
     "EWY": 0.0095
 }
 
+# 交易成本 (A股为万0.5即0.00005，美股与韩国ETF为万1即0.0001)
+TRANS_FEES = {
+    "688_CHIP": 0.00005,
+    "QQQ": 0.0001,
+    "SOXX": 0.0001,
+    "MU": 0.0001,
+    "SanDisk": 0.0001,
+    "EWY": 0.0001
+}
+
 def evaluate_single_run(asset, strat_name, exp_bull, exp_osc, exp_bear, vol_target, lev_type):
     try:
         asset_df = load_asset_data(asset)
         qqq_df = load_asset_data("QQQ")
         r_f = RATES[asset]
         fee_rate = ETF_FEES[asset]
+        t_fee = TRANS_FEES[asset]
         
         # 构建统一的 3 状态仓位参数
         params = {
@@ -56,7 +67,8 @@ def evaluate_single_run(asset, strat_name, exp_bull, exp_osc, exp_bear, vol_targ
                 asset_df, qqq_df, params, 
                 leverage_type=lev_type, 
                 interest_rate=r_f, 
-                fee_rate_annual=fee_rate
+                fee_rate_annual=fee_rate,
+                trans_fee_rate=t_fee
             )
         else:
             profile_type = 'non_believer' if "非信仰型" in strat_name else 'believer'
@@ -65,7 +77,8 @@ def evaluate_single_run(asset, strat_name, exp_bull, exp_osc, exp_bear, vol_targ
                 profile_type=profile_type, 
                 leverage_type=lev_type, 
                 interest_rate=r_f, 
-                fee_rate_annual=fee_rate
+                fee_rate_annual=fee_rate,
+                trans_fee_rate=t_fee
             )
             
         metrics = calculate_metrics(res_df['nav'])

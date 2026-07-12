@@ -37,6 +37,16 @@ ETF_FEES = {
     "EWY": 0.0095
 }
 
+# 交易成本 (A股为万0.5即0.00005，美股与韩国ETF为万1即0.0001)
+TRANS_FEES = {
+    "688_CHIP": 0.00005,
+    "QQQ": 0.0001,
+    "SOXX": 0.0001,
+    "MU": 0.0001,
+    "SanDisk": 0.0001,
+    "EWY": 0.0001
+}
+
 def log_formatter(y, pos):
     """自适应对数轴格式化器，避免科学计数法"""
     if y >= 1.0:
@@ -169,18 +179,21 @@ def plot_3state_analysis():
             }
             
             # 运行回测
+            t_fee = TRANS_FEES[asset]
             if "专业策略" in strat:
                 res_df = run_professional_strategy(
                     asset_df, qqq_df, p, 
                     leverage_type="daily_etf" if "每日 ETF" in strat else "margin_static", 
-                    interest_rate=r_f, fee_rate_annual=fee_rate
+                    interest_rate=r_f, fee_rate_annual=fee_rate,
+                    trans_fee_rate=t_fee
                 )
             else:
                 profile_type = "believer" if "信仰型" in strat else "non_believer"
                 res_df = run_retail_strategy_by_type(
                     asset_df, qqq_df, p, 
                     profile_type=profile_type, leverage_type="daily_etf", 
-                    interest_rate=r_f, fee_rate_annual=fee_rate
+                    interest_rate=r_f, fee_rate_annual=fee_rate,
+                    trans_fee_rate=t_fee
                 )
                 
                 # 记录该散户曲线的转换信号点
